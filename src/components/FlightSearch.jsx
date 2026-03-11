@@ -1,13 +1,17 @@
 import { useState } from 'react'
 
 const ROUTES = [
-  { from: 'BRU', fromName: 'Brussels', to: 'AHU', toName: 'Alhoceima' },
-  { from: 'BRU', fromName: 'Brussels', to: 'NDR', toName: 'Nador' },
-  { from: 'BRU', fromName: 'Brussels', to: 'OUD', toName: 'Oujda' },
-  { from: 'BRU', fromName: 'Brussels', to: 'TNG', toName: 'Tangier' },
-  { from: 'CRL', fromName: 'Charleroi', to: 'AHU', toName: 'Alhoceima' },
-  { from: 'CRL', fromName: 'Charleroi', to: 'NDR', toName: 'Nador' },
-  { from: 'CRL', fromName: 'Charleroi', to: 'OUD', toName: 'Oujda' },
+  // Charleroi routes (Ryanair) - CHEAP!
+  { from: 'CRL', fromName: 'Charleroi', to: 'NDR', toName: 'Nador', airline: 'Ryanair' },
+  { from: 'CRL', fromName: 'Charleroi', to: 'OUD', toName: 'Oujda', airline: 'Ryanair' },
+  { from: 'CRL', fromName: 'Charleroi', to: 'TNG', toName: 'Tangier', airline: 'Ryanair' },
+  { from: 'CRL', fromName: 'Charleroi', to: 'FEZ', toName: 'Fez', airline: 'Ryanair' },
+  { from: 'CRL', fromName: 'Charleroi', to: 'RAK', toName: 'Marrakech', airline: 'Ryanair' },
+  { from: 'CRL', fromName: 'Charleroi', to: 'AGA', toName: 'Agadir', airline: 'Ryanair' },
+  // Brussels routes (other airlines via Amadeus)
+  { from: 'BRU', fromName: 'Brussels', to: 'CMN', toName: 'Casablanca', airline: 'Royal Air Maroc' },
+  { from: 'BRU', fromName: 'Brussels', to: 'RAK', toName: 'Marrakech', airline: 'Multiple' },
+  { from: 'BRU', fromName: 'Brussels', to: 'TNG', toName: 'Tangier', airline: 'Multiple' },
 ]
 
 const TIMEFRAMES = [
@@ -27,10 +31,9 @@ export default function FlightSearch({ onSearch, loading }) {
     e.preventDefault()
     const r = ROUTES[route]
     
-    // Calculate date range
     const today = new Date()
     const dateFrom = new Date(today)
-    dateFrom.setDate(dateFrom.getDate() + 1) // Start tomorrow
+    dateFrom.setDate(dateFrom.getDate() + 1)
     
     const dateTo = new Date(today)
     dateTo.setMonth(dateTo.getMonth() + timeframe)
@@ -55,19 +58,20 @@ export default function FlightSearch({ onSearch, loading }) {
         {/* Route Selection */}
         <div className="mb-6">
           <label className="block text-purple-200 text-sm font-medium mb-3">Where do you want to go?</label>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {ROUTES.map((r, i) => (
               <button
                 key={i}
                 type="button"
                 onClick={() => setRoute(i)}
-                className={`px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300 ${
+                className={`px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300 text-left ${
                   route === i 
                     ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30' 
                     : 'bg-white/10 text-purple-200 hover:bg-white/20'
                 }`}
               >
-                {r.fromName} → {r.toName}
+                <div className="font-bold">{r.fromName} → {r.toName}</div>
+                <div className="text-xs opacity-70">{r.airline}</div>
               </button>
             ))}
           </div>
@@ -146,7 +150,7 @@ export default function FlightSearch({ onSearch, loading }) {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
-              Scanning all dates...
+              Scanning flights...
             </>
           ) : (
             <>🔍 Find Cheapest Flights</>
@@ -154,7 +158,7 @@ export default function FlightSearch({ onSearch, loading }) {
         </button>
 
         <p className="text-center text-purple-300/60 text-sm mt-3">
-          Scans all dates in the {TIMEFRAMES.find(t => t.value === timeframe)?.label.toLowerCase()} to find the best deals
+          Real prices from Ryanair + other airlines
         </p>
       </div>
     </form>
