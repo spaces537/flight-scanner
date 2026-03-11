@@ -1,22 +1,13 @@
 // Vercel Serverless Function - Flight Search
-// Uses Tequila/Kiwi.com API for flight data
-
-const TEQUILA_API_KEY = process.env.TEQUILA_API_KEY || ''
-const TEQUILA_BASE = 'https://api.tequila.kiwi.com/v2'
+// Uses Ryanair unofficial API (free!) + fallback mock data
 
 export default async function handler(req, res) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
   
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end()
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end()
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
   const { from, to, dateFrom, dateTo, maxStay = 7, weekendsOnly = false } = req.body
 
@@ -24,104 +15,155 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing required parameters' })
   }
 
-  // If no API key, return mock data for demo
-  if (!TEQUILA_API_KEY) {
-    return res.status(200).json({
-      flights: generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly)
-    })
-  }
-
   try {
-    const formatDate = (d) => d.split('-').reverse().join('/')
+    // Try Ryanair API first
+    const flights = await searchRyanair(from, to, dateFrom, dateTo, maxStay, weekendsOnly)
     
-    const params = new URLSearchParams({
-      fly_from: from,
-      fly_to: to,
-      date_from: formatDate(dateFrom),
-      date_to: formatDate(dateTo),
-      return_from: formatDate(dateFrom),
-      return_to: formatDate(dateTo),
-      nights_in_dst_from: '2',
-      nights_in_dst_to: String(maxStay),
-      flight_type: 'round',
-      adults: '1',
-      curr: 'EUR',
-      sort: 'price',
-      limit: '30',
-      max_stopovers: '1'
-    })
-
-    // Add weekend filter if enabled
-    if (weekendsOnly) {
-      params.set('fly_days', '4,5') // Thursday, Friday departures
-      params.set('ret_fly_days', '0,6') // Sunday, Saturday returns
+    if (flights.length > 0) {
+      return res.status(200).json({ flights, source: 'ryanair' })
     }
-
-    const response = await fetch(`${TEQUILA_BASE}/search?${params}`, {
-      headers: {
-        'apikey': TEQUILA_API_KEY,
-        'Content-Type': 'application/json'
-      }
-    })
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`)
-    }
-
-    const data = await response.json()
     
-    const flights = (data.data || []).map(flight => {
-      const outboundRoutes = flight.route.filter(r => r.return === 0)
-      const returnRoutes = flight.route.filter(r => r.return === 1)
-      
-      return {
-        price: Math.round(flight.price),
-        airlines: [...new Set(flight.route.map(r => r.airline))],
-        nightsAway: flight.nightsInDest,
-        outbound: {
-          departure: outboundRoutes[0]?.local_departure,
-          arrival: outboundRoutes[outboundRoutes.length - 1]?.local_arrival,
-          duration: flight.duration?.departure ? Math.round(flight.duration.departure / 60) : 0,
-          stops: outboundRoutes.length - 1
-        },
-        return: {
-          departure: returnRoutes[0]?.local_departure,
-          arrival: returnRoutes[returnRoutes.length - 1]?.local_arrival,
-          duration: flight.duration?.return ? Math.round(flight.duration.return / 60) : 0,
-          stops: returnRoutes.length - 1
-        },
-        bookingLink: flight.deep_link
-      }
+    // Fallback to mock data
+    return res.status(200).json({
+      flights: generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly),
+      source: 'mock'
     })
-
-    return res.status(200).json({ flights })
   } catch (error) {
-    console.error('Flight search error:', error)
+    console.error('Search error:', error)
     return res.status(200).json({ 
-      flights: generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly)
+      flights: generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly),
+      source: 'mock',
+      error: error.message
     })
   }
 }
 
-// Mock data generator for demo/fallback
+async function searchRyanair(from, to, dateFrom, dateTo, maxStay, weekendsOnly) {
+  const flights = []
+  
+  // Ryanair API endpoints (unofficial but works)
+  const RYANAIR_API = 'https://www.ryanair.com/api/farfnd/v4'
+  
+  try {
+    // Get cheapest fares for the route
+    const startDate = new Date(dateFrom)
+    const endDate = new Date(dateTo)
+    
+    // Format dates for Ryanair API
+    const outboundFrom = startDate.toISOString().split('T')[0]
+    const outboundTo = endDate.toISOString().split('T')[0]
+    
+    // Search for one-way fares first (outbound)
+    const outboundUrl = `${RYANAIR_API}/oneWayFares/${from}/${to}/cheapestPerDay?outboundDateFrom=${outboundFrom}&outboundDateTo=${outboundTo}`
+    
+    const outboundRes = await fetch(outboundUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      }
+    })
+    
+    if (!outboundRes.ok) {
+      throw new Error(`Ryanair API error: ${outboundRes.status}`)
+    }
+    
+    const outboundData = await outboundRes.json()
+    const outboundFares = outboundData.outbound?.fares || []
+    
+    // For each outbound fare, find return options
+    for (const outFare of outboundFares.slice(0, 15)) {
+      if (!outFare.price || outFare.unavailable) continue
+      
+      const outDate = new Date(outFare.departureDate || outFare.day)
+      
+      // Skip if weekends only filter and not Thu/Fri
+      if (weekendsOnly && ![4, 5].includes(outDate.getDay())) continue
+      
+      // Search for returns within maxStay days
+      for (let nights = 2; nights <= maxStay; nights++) {
+        const returnDate = new Date(outDate)
+        returnDate.setDate(returnDate.getDate() + nights)
+        
+        if (returnDate > endDate) continue
+        
+        // Check weekend return filter (Sat/Sun)
+        if (weekendsOnly && ![0, 6].includes(returnDate.getDay())) continue
+        
+        const returnDateStr = returnDate.toISOString().split('T')[0]
+        
+        // Get return fares
+        try {
+          const returnUrl = `${RYANAIR_API}/oneWayFares/${to}/${from}/cheapestPerDay?outboundDateFrom=${returnDateStr}&outboundDateTo=${returnDateStr}`
+          
+          const returnRes = await fetch(returnUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': 'application/json'
+            }
+          })
+          
+          if (returnRes.ok) {
+            const returnData = await returnRes.json()
+            const returnFares = returnData.outbound?.fares || []
+            const returnFare = returnFares.find(f => f.day === returnDateStr || f.departureDate?.startsWith(returnDateStr))
+            
+            if (returnFare && returnFare.price && !returnFare.unavailable) {
+              const totalPrice = (outFare.price.value || 0) + (returnFare.price.value || 0)
+              
+              flights.push({
+                price: Math.round(totalPrice),
+                airlines: ['Ryanair'],
+                nightsAway: nights,
+                outbound: {
+                  departure: outFare.departureDate || `${outFare.day}T10:00:00`,
+                  arrival: outFare.arrivalDate || `${outFare.day}T13:00:00`,
+                  duration: 180,
+                  stops: 0
+                },
+                return: {
+                  departure: returnFare.departureDate || `${returnDateStr}T14:00:00`,
+                  arrival: returnFare.arrivalDate || `${returnDateStr}T17:00:00`,
+                  duration: 180,
+                  stops: 0
+                },
+                bookingLink: `https://www.ryanair.com/gb/en/trip/flights/select?adults=1&dateOut=${outFare.day}&dateIn=${returnDateStr}&originIata=${from}&destinationIata=${to}`
+              })
+            }
+          }
+        } catch (e) {
+          // Skip this return date
+        }
+      }
+    }
+    
+    // Sort by price and dedupe
+    return flights
+      .sort((a, b) => a.price - b.price)
+      .filter((f, i, arr) => i === arr.findIndex(x => 
+        x.outbound.departure === f.outbound.departure && 
+        x.return.departure === f.return.departure
+      ))
+      .slice(0, 20)
+      
+  } catch (error) {
+    console.error('Ryanair API error:', error)
+    return []
+  }
+}
+
 function generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly) {
   const flights = []
   const startDate = new Date(dateFrom)
   const endDate = new Date(dateTo)
   const totalDays = Math.ceil((endDate - startDate) / 86400000)
   
-  const airlines = ['Ryanair', 'TUI fly', 'Royal Air Maroc', 'Air Arabia']
-  const airlinePrices = { 'Ryanair': 0, 'TUI fly': 20, 'Royal Air Maroc': 40, 'Air Arabia': 10 }
+  const airlines = ['Ryanair', 'TUI fly', 'Air Arabia']
   
-  // Generate 15-20 flight options across the date range
-  const numFlights = 15 + Math.floor(Math.random() * 6)
-  
-  for (let i = 0; i < numFlights; i++) {
+  for (let i = 0; i < 18; i++) {
     let daysOffset = Math.floor(Math.random() * totalDays)
     const outDate = new Date(startDate)
     outDate.setDate(outDate.getDate() + daysOffset)
     
-    // If weekends only, adjust to Thursday/Friday
     if (weekendsOnly) {
       const day = outDate.getDay()
       if (day < 4) outDate.setDate(outDate.getDate() + (4 - day))
@@ -132,48 +174,41 @@ function generateMockFlights(from, to, dateFrom, dateTo, maxStay, weekendsOnly) 
     const returnDate = new Date(outDate)
     returnDate.setDate(returnDate.getDate() + nights)
     
-    // Skip if return is past end date
     if (returnDate > endDate) continue
     
     const airline = airlines[Math.floor(Math.random() * airlines.length)]
     const outHour = 6 + Math.floor(Math.random() * 14)
     const returnHour = 6 + Math.floor(Math.random() * 14)
-    
     const outDuration = 150 + Math.floor(Math.random() * 90)
     const returnDuration = 150 + Math.floor(Math.random() * 90)
     
-    // Base price with some variance - cheaper midweek
     const dayOfWeek = outDate.getDay()
-    const weekdayDiscount = (dayOfWeek >= 1 && dayOfWeek <= 3) ? -25 : 0
-    const basePrice = 65 + Math.floor(Math.random() * 80) + airlinePrices[airline] + weekdayDiscount
+    const weekdayDiscount = (dayOfWeek >= 1 && dayOfWeek <= 3) ? -30 : 0
+    const basePrice = 49 + Math.floor(Math.random() * 100) + weekdayDiscount
     
     const outDep = new Date(outDate)
     outDep.setHours(outHour, Math.floor(Math.random() * 60))
-    
-    const outArr = new Date(outDep)
-    outArr.setMinutes(outArr.getMinutes() + outDuration)
+    const outArr = new Date(outDep.getTime() + outDuration * 60000)
     
     const retDep = new Date(returnDate)
     retDep.setHours(returnHour, Math.floor(Math.random() * 60))
-    
-    const retArr = new Date(retDep)
-    retArr.setMinutes(retArr.getMinutes() + returnDuration)
+    const retArr = new Date(retDep.getTime() + returnDuration * 60000)
     
     flights.push({
-      price: basePrice,
+      price: Math.max(39, basePrice),
       airlines: [airline],
       nightsAway: nights,
       outbound: {
         departure: outDep.toISOString(),
         arrival: outArr.toISOString(),
         duration: outDuration,
-        stops: Math.random() > 0.8 ? 1 : 0
+        stops: Math.random() > 0.9 ? 1 : 0
       },
       return: {
         departure: retDep.toISOString(),
         arrival: retArr.toISOString(),
         duration: returnDuration,
-        stops: Math.random() > 0.8 ? 1 : 0
+        stops: Math.random() > 0.9 ? 1 : 0
       },
       bookingLink: `https://www.skyscanner.net/transport/flights/${from.toLowerCase()}/${to.toLowerCase()}/`
     })
